@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+model_cache/
+*.csv
+*.json
+data/
+dataset/
+*.h5
+*.model
+*.weights
+*.ckpt
+*.pth
+.DS_Store
+.env
