@@ -24,7 +24,8 @@ from config import (
     BNB_4BIT_QUANT_TYPE,
     BNB_4BIT_USE_DOUBLE_QUANT,
     MAX_NEW_TOKENS,
-    INFERENCE_BATCH_SIZE
+    INFERENCE_BATCH_SIZE,
+    PROMPT_TEMPLATE
 )
 
 def load_model_and_tokenizer() -> Tuple[PeftModel, AutoTokenizer]:
@@ -33,9 +34,9 @@ def load_model_and_tokenizer() -> Tuple[PeftModel, AutoTokenizer]:
     
     # 토크나이저
     tokenizer = AutoTokenizer.from_pretrained(
-        MODEL_NAME, 
+        MODEL_NAME,  
         trust_remote_code=True,
-        cache_dir=CACHE_DIR
+        cache_dir=CACHE_DIR  
     )
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
@@ -72,27 +73,37 @@ def load_model_and_tokenizer() -> Tuple[PeftModel, AutoTokenizer]:
     print("✅ 모델 로드 완료!")
     return model, tokenizer
 
-def create_fewshot_prompt(sentences):
-    """Few-shot 프롬프트 생성"""
-    return f"""다음은 문장 순서 배열의 예시입니다. 문맥을 파악하여 가장 자연스러운 순서를 찾으세요.:
+# def create_fewshot_prompt(sentences):
+#     """Few-shot 프롬프트 생성"""
+#     return f"""다음은 문장 순서 배열의 예시입니다. 문맥을 파악하여 가장 자연스러운 순서를 찾으세요.:
                 
-            예시 2:
-            문장들:
-            0: 119에 신고했다.
-            1: 아파트에서 화재가 발생했다.
-            2: 소방차가 현장에 도착했다.
-            3: 불이 완전히 진화되었다.
-            답: 1,0,2,3
+#             예시 2:
+#             문장들:
+#             0: 119에 신고했다.
+#             1: 아파트에서 화재가 발생했다.
+#             2: 소방차가 현장에 도착했다.
+#             3: 불이 완전히 진화되었다.
+#             답: 1,0,2,3
             
-            이제 다음 문장들을 배열하세요:
+#             이제 다음 문장들을 배열하세요:
             
-            문장들:
-            0: {sentences[0]}
-            1: {sentences[1]}
-            2: {sentences[2]}
-            3: {sentences[3]}
+#             문장들:
+#             0: {sentences[0]}
+#             1: {sentences[1]}
+#             2: {sentences[2]}
+#             3: {sentences[3]}
             
-            답:"""
+#             답:"""
+
+def create_fewshot_prompt(sentences):
+    """config.py의 템플릿으로 프롬프트 생성"""
+    return PROMPT_TEMPLATE.format(
+        sentence_0=sentences[0],
+        sentence_1=sentences[1],
+        sentence_2=sentences[2],
+        sentence_3=sentences[3]
+    )
+
 
 def predict_batch(sentences_batch: List[List[str]], model: PeftModel, tokenizer: AutoTokenizer) -> List[str]:
     """배치 단위로 문장 순서 예측"""
@@ -241,7 +252,7 @@ def main(input_file: str, output_file: str) -> pd.DataFrame:
     model, tokenizer = load_model_and_tokenizer()
     
     # 데이터 로드
-    df = pd.read_csv(input_file)
+    df = pd.read_csv(input_file)#.head(5)
     print(f"📂 데이터 로드: {len(df)}개 행")
     
     # 배치별 처리
@@ -332,7 +343,7 @@ def main(input_file: str, output_file: str) -> pd.DataFrame:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='순수 AI 추론 (후처리 제외)')
     parser.add_argument('--input', '-i', default='test.csv', help='입력 CSV 파일')
-    parser.add_argument('--output', '-o', default='ai_predictions.csv', help='출력 CSV 파일')
+    parser.add_argument('--output', '-o', default='predictions_0527.csv', help='출력 CSV 파일')
     
     args = parser.parse_args()
     

@@ -1,5 +1,7 @@
 """통합 훈련 모듈 - 데이터 전처리 + 모델 + 훈련"""
-
+import os
+import random
+import numpy as np
 import pandas as pd
 import torch
 from datasets import Dataset
@@ -13,46 +15,36 @@ from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 import config
 
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+set_seed(42)
+
+
+
 def load_and_prepare_data():
     """데이터 로드 및 준비"""
     df = pd.read_csv(config.TRAIN_FILE)
     
-    # 샘플 제한 (필요시)
-    # df = df.head(100)
-    
     # 훈련/검증 분할
-    train_df, val_df = train_test_split(df, test_size=0.1, random_state=42)
+    train_df, val_df = train_test_split(df, test_size=0.25, random_state=42)
     
-    # 프롬프트 템플릿
-    template = """<|im_start|>system
-당신은 문장 순서를 논리적으로 배열하는 전문가입니다.<|im_end|>
-<|im_start|>user
-다음 4개의 문장을 올바른 순서로 배열하세요.
-
-문장들:
-0: {sentence_0}
-1: {sentence_1}
-2: {sentence_2}
-3: {sentence_3}
-
-올바른 순서를 쉼표로 구분된 숫자로 답해주세요.<|im_end|>
-<|im_start|>assistant
-{answer_0},{answer_1},{answer_2},{answer_3}<|im_end|>"""
-
     # 데이터 포맷팅
     def format_data(df):
         formatted = []
         for _, row in tqdm(df.iterrows(), total=len(df)):
-            text = template.format(
+            text = config.PROMPT_TEMPLATE.format(
                 sentence_0=row['sentence_0'],
                 sentence_1=row['sentence_1'],
                 sentence_2=row['sentence_2'],
                 sentence_3=row['sentence_3'],
-                answer_0=row['answer_0'],
-                answer_1=row['answer_1'],
-                answer_2=row['answer_2'],
-                answer_3=row['answer_3']
-            )
+            ) + f" {row['answer_0']},{row['answer_1']},{row['answer_2']},{row['answer_3']}<|im_end|>"
             formatted.append({"text": text})
         return formatted
 
