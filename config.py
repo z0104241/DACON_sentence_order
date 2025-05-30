@@ -1,10 +1,4 @@
-"""GPU 전용 설정"""
-
 import os
-
-
-
-
 # 모델 설정
 MODEL_NAME = "Qwen/Qwen3-8B"  # 베이스 모델
 HUGGINGFACE_REPO = "z0104241/DACON_sentence_order"
@@ -35,16 +29,13 @@ LORA_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", 
 LEARNING_RATE = 2e-4    # 더 큰 데이터, 배치크기 증가에 맞춰 살짝 상향
 BATCH_SIZE = 6          # 단일 GPU에서 4bit, LoRA시 24GB 충분
 GRAD_ACCUMULATION = 8   # Effective batch size 32 (4x8)
-MAX_STEPS = 1000        # (데이터 28k / 32 = 약 900step/epoch) → 2~3epoch 정도 커버
+MAX_STEPS = 600        # (데이터 28k / 32 = 약 900step/epoch) → 2~3epoch 정도 커버
 WARMUP_STEPS = 200
 SAVE_STEPS = 10000        # 더 자주 저장
 
-
-
-
-
 # 추론 설정 등 기타 동일
 TRAIN_FILE = "train_augmented.csv"   # *** 데이터 증강이된 train.csv ***
+# TRAIN_FILE = "train.csv"   # *** 데이터 증강이된 train.csv ***
 TEST_FILE = "test.csv"
 OUTPUT_DIR = "qwen3_model"
 PREDICTIONS_FILE = "predictions.csv"
@@ -59,10 +50,6 @@ MAX_NEW_TOKENS = 120
 INFERENCE_BATCH_SIZE = 6  # 배치 처리용
 CHECKPOINT_INTERVAL = 1000  # 체크포인트 저장 간격
 
-
-
-
-
 # 프롬프트 설정
 FEWSHOT_EXAMPLE = """예시:
 문장들:
@@ -71,7 +58,6 @@ FEWSHOT_EXAMPLE = """예시:
 2: 소방차가 현장에 도착했다.
 3: 불이 완전히 진화되었다.
 답: 1,0,2,3
-
 """
 
 PROMPT_TEMPLATE = (

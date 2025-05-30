@@ -25,14 +25,63 @@ from config import (
     BNB_4BIT_USE_DOUBLE_QUANT,
     MAX_NEW_TOKENS,
     INFERENCE_BATCH_SIZE,
-    PROMPT_TEMPLATE
+    PROMPT_TEMPLATE,
+    OUTPUT_DIR  
 )
 
-def load_model_and_tokenizer() -> Tuple[PeftModel, AutoTokenizer]:
-    """모델과 토크나이저 로드"""
-    print("🔧 모델 로드 중...")
+
+### 허깅페이스 업로드용
+# def load_model_and_tokenizer() -> Tuple[PeftModel, AutoTokenizer]: 
+#     """모델과 토크나이저 로드"""
+#     print("🔧 모델 로드 중...")
     
-    # 토크나이저
+#     # 토크나이저
+#     tokenizer = AutoTokenizer.from_pretrained(
+#         MODEL_NAME,  
+#         trust_remote_code=True,
+#         cache_dir=CACHE_DIR  
+#     )
+#     tokenizer.pad_token = tokenizer.eos_token
+#     tokenizer.padding_side = "left"
+    
+#     # 양자화 설정
+#     compute_dtype = getattr(torch, BNB_4BIT_COMPUTE_DTYPE)
+    
+#     bnb_config = BitsAndBytesConfig(
+#         load_in_4bit=USE_4BIT,
+#         bnb_4bit_use_double_quant=BNB_4BIT_USE_DOUBLE_QUANT,
+#         bnb_4bit_quant_type=BNB_4BIT_QUANT_TYPE,
+#         bnb_4bit_compute_dtype=compute_dtype,
+#     )
+    
+#     # 베이스 모델
+#     base_model = AutoModelForCausalLM.from_pretrained(
+#         MODEL_NAME,
+#         quantization_config=bnb_config,
+#         device_map="auto",
+#         trust_remote_code=True,
+#         torch_dtype=torch.float16,
+#         cache_dir=CACHE_DIR
+#     )
+    
+#     # LoRA 어댑터 로드
+#     model = PeftModel.from_pretrained(
+#         base_model, 
+#         HUGGINGFACE_REPO,
+#         subfolder=ADAPTER_SUBFOLDER,
+#         cache_dir=CACHE_DIR
+#     )
+#     model.eval()
+    
+#     print("✅ 모델 로드 완료!")
+#     return model, tokenizer
+
+
+
+def load_model_and_tokenizer() -> Tuple[PeftModel, AutoTokenizer]:
+    """모델과 토크나이저 로드 (로컬 어댑터 경로 사용)"""
+    print("🔧 모델 로드 중...")
+
     tokenizer = AutoTokenizer.from_pretrained(
         MODEL_NAME,  
         trust_remote_code=True,
@@ -40,18 +89,14 @@ def load_model_and_tokenizer() -> Tuple[PeftModel, AutoTokenizer]:
     )
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
-    
-    # 양자화 설정
+
     compute_dtype = getattr(torch, BNB_4BIT_COMPUTE_DTYPE)
-    
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=USE_4BIT,
         bnb_4bit_use_double_quant=BNB_4BIT_USE_DOUBLE_QUANT,
         bnb_4bit_quant_type=BNB_4BIT_QUANT_TYPE,
         bnb_4bit_compute_dtype=compute_dtype,
     )
-    
-    # 베이스 모델
     base_model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         quantization_config=bnb_config,
@@ -60,18 +105,26 @@ def load_model_and_tokenizer() -> Tuple[PeftModel, AutoTokenizer]:
         torch_dtype=torch.float16,
         cache_dir=CACHE_DIR
     )
+
+    # === 로컬 어댑터 로드 ===
     
-    # LoRA 어댑터 로드
     model = PeftModel.from_pretrained(
         base_model, 
-        HUGGINGFACE_REPO,
-        subfolder=ADAPTER_SUBFOLDER,
-        cache_dir=CACHE_DIR
+        OUTPUT_DIR    
     )
     model.eval()
-    
+
     print("✅ 모델 로드 완료!")
     return model, tokenizer
+
+
+
+
+
+
+
+
+
 
 # def create_fewshot_prompt(sentences):
 #     """Few-shot 프롬프트 생성"""
@@ -316,7 +369,7 @@ def main(input_file: str, output_file: str) -> pd.DataFrame:
     
     # 최종 결과 저장
     results_df = pd.DataFrame(results)
-    results_df.to_csv(output_file, index=False, encoding='utf-8-sig')
+    results_df.iloc[:,:5].to_csv(output_file, index=False, encoding='utf-8-sig')
     
     # 파싱 성공률 계산
     success_count = len(results_df[results_df['parsing_status'] == 'SUCCESS'])
