@@ -117,37 +117,6 @@ def load_model_and_tokenizer() -> Tuple[PeftModel, AutoTokenizer]:
     print("✅ 모델 로드 완료!")
     return model, tokenizer
 
-
-
-
-
-
-
-
-
-
-# def create_fewshot_prompt(sentences):
-#     """Few-shot 프롬프트 생성"""
-#     return f"""다음은 문장 순서 배열의 예시입니다. 문맥을 파악하여 가장 자연스러운 순서를 찾으세요.:
-                
-#             예시 2:
-#             문장들:
-#             0: 119에 신고했다.
-#             1: 아파트에서 화재가 발생했다.
-#             2: 소방차가 현장에 도착했다.
-#             3: 불이 완전히 진화되었다.
-#             답: 1,0,2,3
-            
-#             이제 다음 문장들을 배열하세요:
-            
-#             문장들:
-#             0: {sentences[0]}
-#             1: {sentences[1]}
-#             2: {sentences[2]}
-#             3: {sentences[3]}
-            
-#             답:"""
-
 def create_fewshot_prompt(sentences):
     """config.py의 템플릿으로 프롬프트 생성"""
     return PROMPT_TEMPLATE.format(

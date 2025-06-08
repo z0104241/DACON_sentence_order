@@ -1,6 +1,6 @@
 import os
 # 모델 설정
-MODEL_NAME = "Qwen/Qwen3-8B"  # 베이스 모델
+MODEL_NAME = "Qwen/Qwen3-14B"  # 베이스 모델
 HUGGINGFACE_REPO = "z0104241/DACON_sentence_order"
 ADAPTER_SUBFOLDER = "qwen3_model"
 MAX_SEQ_LENGTH = 2048
@@ -17,25 +17,17 @@ LORA_ALPHA = 128
 LORA_DROPOUT = 0.05
 LORA_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
-# === 기존 파라미터 (주석 처리) ===
-# LEARNING_RATE = 1e-4
-# BATCH_SIZE = 1
-# GRAD_ACCUMULATION = 16
-# MAX_STEPS = 1000
-# WARMUP_STEPS = 100
-# SAVE_STEPS = 200
-
-# === A5000(24GB), 증강데이터 기준 파라미터 ===
-LEARNING_RATE = 2e-4    # 더 큰 데이터, 배치크기 증가에 맞춰 살짝 상향
-BATCH_SIZE = 6          # 단일 GPU에서 4bit, LoRA시 24GB 충분
-GRAD_ACCUMULATION = 8   # Effective batch size 32 (4x8)
-MAX_STEPS = 600        # (데이터 28k / 32 = 약 900step/epoch) → 2~3epoch 정도 커버
-WARMUP_STEPS = 200
-SAVE_STEPS = 10000        # 더 자주 저장
+# === A5000(24GB) ===
+LEARNING_RATE = 2e-4    
+BATCH_SIZE = 3        
+GRAD_ACCUMULATION = 8   
+MAX_STEPS = 500        
+WARMUP_STEPS = 70
+SAVE_STEPS = 10000        
 
 # 추론 설정 등 기타 동일
-TRAIN_FILE = "train_augmented.csv"   # *** 데이터 증강이된 train.csv ***
-# TRAIN_FILE = "train.csv"   # *** 데이터 증강이된 train.csv ***
+#TRAIN_FILE = "train_augmented.csv"   # *** 데이터 증강이된 train.csv ***
+TRAIN_FILE = "train.csv"   # *** 데이터 증강이된 train.csv ***
 TEST_FILE = "test.csv"
 OUTPUT_DIR = "qwen3_model"
 PREDICTIONS_FILE = "predictions.csv"
