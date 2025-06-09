@@ -117,37 +117,6 @@ def load_model_and_tokenizer() -> Tuple[PeftModel, AutoTokenizer]:
     print("✅ 모델 로드 완료!")
     return model, tokenizer
 
-
-
-
-
-
-
-
-
-
-# def create_fewshot_prompt(sentences):
-#     """Few-shot 프롬프트 생성"""
-#     return f"""다음은 문장 순서 배열의 예시입니다. 문맥을 파악하여 가장 자연스러운 순서를 찾으세요.:
-                
-#             예시 2:
-#             문장들:
-#             0: 119에 신고했다.
-#             1: 아파트에서 화재가 발생했다.
-#             2: 소방차가 현장에 도착했다.
-#             3: 불이 완전히 진화되었다.
-#             답: 1,0,2,3
-            
-#             이제 다음 문장들을 배열하세요:
-            
-#             문장들:
-#             0: {sentences[0]}
-#             1: {sentences[1]}
-#             2: {sentences[2]}
-#             3: {sentences[3]}
-            
-#             답:"""
-
 def create_fewshot_prompt(sentences):
     """config.py의 템플릿으로 프롬프트 생성"""
     return PROMPT_TEMPLATE.format(
@@ -157,19 +126,14 @@ def create_fewshot_prompt(sentences):
         sentence_3=sentences[3]
     )
 
-
-def predict_batch(sentences_batch: List[List[str]], model: PeftModel, tokenizer: AutoTokenizer) -> List[str]:
-    """배치 단위로 문장 순서 예측"""
-    
-    # 프롬프트 생성 (Few-shot 적용)
+def predict_batch_return_raw(sentences_batch: List[List[str]], model: PeftModel, tokenizer: AutoTokenizer) -> Tuple[List[str], List[str]]:
+    """
+    배치 예측 결과와 LLM 원본 답변(raw text) 반환.
+    """
     prompts = [create_fewshot_prompt(sentences) for sentences in sentences_batch]
-    
-    # 메시지 형태로 변환
     messages_batch = [[{"role": "user", "content": prompt}] for prompt in prompts]
     texts = [tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True) 
              for messages in messages_batch]
-    
-    # 토크나이징
     inputs = tokenizer(
         texts, 
         return_tensors="pt", 
@@ -177,28 +141,26 @@ def predict_batch(sentences_batch: List[List[str]], model: PeftModel, tokenizer:
         truncation=True, 
         max_length=1024
     ).to(model.device)
-    
-    # 배치 추론 (greedy decoding)
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
             max_new_tokens=MAX_NEW_TOKENS,
-            do_sample=False,  # greedy decoding
+            do_sample=False,
             temperature=None,
             top_p=None,
             top_k=None,
             pad_token_id=tokenizer.eos_token_id,
             repetition_penalty=1.05
         )
-    
-    # 결과 디코딩
     results = []
+    raw_outputs = []
     for i, output in enumerate(outputs):
         input_length = inputs.input_ids[i].shape[0]
         generated = tokenizer.decode(output[input_length:], skip_special_tokens=True).strip()
         results.append(extract_order_enhanced(generated))
-    
-    return results
+        raw_outputs.append(generated)
+    return results, raw_outputs
+
 
 def extract_order_enhanced(text: str) -> str:
     """강화된 파싱 함수"""
@@ -295,39 +257,32 @@ def process_result(predicted_order: str) -> Dict[str, Union[int, str]]:
             'raw_output': predicted_order,
             'parsing_status': 'FAILED'
         }
-
 def main(input_file: str, output_file: str) -> pd.DataFrame:
-    """메인 실행 함수"""
-    
+    import time
     start_time = time.time()
-    
-    # 모델 로드
+
+    # 모델/토크나이저 로드
     model, tokenizer = load_model_and_tokenizer()
-    
+
     # 데이터 로드
-    df = pd.read_csv(input_file)#.head(5)
+    df = pd.read_csv(input_file)
     print(f"📂 데이터 로드: {len(df)}개 행")
-    
-    # 배치별 처리
+
+    # 배치별 예측
     results = []
     total_batches = (len(df) + INFERENCE_BATCH_SIZE - 1) // INFERENCE_BATCH_SIZE
-    
+
     print(f"🚀 배치 크기: {INFERENCE_BATCH_SIZE}, 총 배치: {total_batches}")
-    
+
     for batch_idx in tqdm(range(total_batches), desc="배치 처리"):
-        # 배치 데이터 준비
         start_idx = batch_idx * INFERENCE_BATCH_SIZE
         end_idx = min(start_idx + INFERENCE_BATCH_SIZE, len(df))
         batch_rows = df.iloc[start_idx:end_idx]
-        
+
         try:
-            # 배치 내 문장들 추출
             sentences_batch = [extract_sentences(row) for _, row in batch_rows.iterrows()]
-            
-            # 배치 예측
-            predicted_orders = predict_batch(sentences_batch, model, tokenizer)
-            
-            # 결과 저장 (순수 AI 결과만)
+            predicted_orders, raw_outputs = predict_batch_return_raw(sentences_batch, model, tokenizer)
+
             for i, (row_idx, _) in enumerate(batch_rows.iterrows()):
                 result = process_result(predicted_orders[i])
                 results.append({
@@ -336,22 +291,17 @@ def main(input_file: str, output_file: str) -> pd.DataFrame:
                     'answer_1': result['answer_1'],
                     'answer_2': result['answer_2'],
                     'answer_3': result['answer_3'],
+                    'context': raw_outputs[i],  # LLM 원본 답변
                     'raw_output': result['raw_output'],
                     'parsing_status': result['parsing_status'],
-                    # 후처리용 원본 문장들 저장
                     'sentence_0': sentences_batch[i][0],
                     'sentence_1': sentences_batch[i][1],
                     'sentence_2': sentences_batch[i][2],
                     'sentence_3': sentences_batch[i][3]
                 })
-            
-            # GPU 메모리 정리
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-                
         except Exception as e:
-            print(f"❌ 배치 {batch_idx} 오류: {e}")
-            # 배치 전체를 에러로 처리
             for i, (row_idx, _) in enumerate(batch_rows.iterrows()):
                 results.append({
                     'ID': f'TEST_{row_idx:04d}',
@@ -359,6 +309,7 @@ def main(input_file: str, output_file: str) -> pd.DataFrame:
                     'answer_1': '',
                     'answer_2': '',
                     'answer_3': '',
+                    'context': '',
                     'raw_output': f'BATCH_ERROR: {e}',
                     'parsing_status': 'ERROR',
                     'sentence_0': '',
@@ -366,23 +317,45 @@ def main(input_file: str, output_file: str) -> pd.DataFrame:
                     'sentence_2': '',
                     'sentence_3': ''
                 })
-    
-    # 최종 결과 저장
+
     results_df = pd.DataFrame(results)
-    results_df.iloc[:,:5].to_csv(output_file, index=False, encoding='utf-8-sig')
-    
-    # 파싱 성공률 계산
-    success_count = len(results_df[results_df['parsing_status'] == 'SUCCESS'])
-    failed_count = len(results_df[results_df['parsing_status'] == 'FAILED'])
-    error_count = len(results_df[results_df['parsing_status'] == 'ERROR'])
+
+    # (1) 결측치/파싱실패 행 재추론
+    mask = results_df[['answer_0','answer_1','answer_2','answer_3']].isnull().any(axis=1) | (results_df['parsing_status'] != 'SUCCESS')
+    failed_rows = results_df[mask]
+    if len(failed_rows) > 0:
+        print(f"⚠️ 결측/파싱실패 행 {len(failed_rows)}건, 재추론 시도")
+        # 원본 문장들로 재추론
+        sentences_batch = [
+            [row['sentence_0'], row['sentence_1'], row['sentence_2'], row['sentence_3']]
+            for _, row in failed_rows.iterrows()
+        ]
+        predicted_orders, raw_outputs = predict_batch_return_raw(sentences_batch, model, tokenizer)
+        for idx, (row_idx, _) in enumerate(failed_rows.iterrows()):
+            result = process_result(predicted_orders[idx])
+            # 기존 결과 덮어쓰기
+            results_df.loc[failed_rows.index[idx], 'answer_0'] = result['answer_0']
+            results_df.loc[failed_rows.index[idx], 'answer_1'] = result['answer_1']
+            results_df.loc[failed_rows.index[idx], 'answer_2'] = result['answer_2']
+            results_df.loc[failed_rows.index[idx], 'answer_3'] = result['answer_3']
+            results_df.loc[failed_rows.index[idx], 'context'] = raw_outputs[idx]
+            results_df.loc[failed_rows.index[idx], 'raw_output'] = result['raw_output']
+            results_df.loc[failed_rows.index[idx], 'parsing_status'] = result['parsing_status']
+
+    # 결과 저장
+    # (필요 컬럼만 저장: answer_0~3, context 등)
+    results_df.to_csv(output_file, index=False, encoding='utf-8-sig')
+
+    # 성공률 등 통계
+    success_count = (results_df['parsing_status'] == 'SUCCESS').sum()
+    failed_count = (results_df['parsing_status'] == 'FAILED').sum()
+    error_count = (results_df['parsing_status'] == 'ERROR').sum()
     total_count = len(results_df)
-    
     success_rate = (success_count / total_count) * 100 if total_count > 0 else 0
-    
-    # 처리 시간 계산
+
     elapsed_time = time.time() - start_time
     samples_per_sec = len(df) / elapsed_time
-    
+
     print(f"💾 순수 AI 추론 결과 저장: {output_file}")
     print(f"📊 파싱 성공률: {success_rate:.1f}% ({success_count}/{total_count})")
     print(f"   - 성공: {success_count}")
@@ -390,13 +363,14 @@ def main(input_file: str, output_file: str) -> pd.DataFrame:
     print(f"   - 에러: {error_count}")
     print(f"⏱️  처리 시간: {elapsed_time:.1f}초")
     print(f"🚀 처리 속도: {samples_per_sec:.1f} 샘플/초")
-    
+
     return results_df
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='순수 AI 추론 (후처리 제외)')
     parser.add_argument('--input', '-i', default='test.csv', help='입력 CSV 파일')
-    parser.add_argument('--output', '-o', default='predictions_0527.csv', help='출력 CSV 파일')
+    parser.add_argument('--output', '-o', default='predictions.csv', help='출력 CSV 파일')
     
     args = parser.parse_args()
     

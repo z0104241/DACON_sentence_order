@@ -1,10 +1,11 @@
+"""통합 훈련 모듈 - 데이터 전처리 + 모델 + 훈련"""
 import os
 import random
+import itertools
 import numpy as np
 import pandas as pd
 import torch
 from datasets import Dataset
-from torch.utils.data import DataLoader
 from transformers import (
     AutoTokenizer, AutoModelForCausalLM, TrainingArguments,
     BitsAndBytesConfig
@@ -26,36 +27,103 @@ def set_seed(seed):
 
 set_seed(42)
 
+def hamming_distance(a, b):
+    return sum(x != y for x, y in zip(a, b))
+
+def augment_train_df(train_df, max_aug=2):
+    """train_df에서 각 row별로 hard negative 증강(해밍거리 1~2), ID 변경"""
+    augmented_rows = []
+    for _, row in tqdm(train_df.iterrows(), total=len(train_df)):
+        orig_perm = tuple(row[f'answer_{i}'] for i in range(4))
+        all_perms = list(itertools.permutations(range(4)))
+        hard_perms = [p for p in all_perms if 1 <= hamming_distance(orig_perm, p) <= 2]
+        if not hard_perms:
+            continue
+        selected = random.sample(hard_perms, min(max_aug, len(hard_perms)))
+        sentences = [row[f'sentence_{i}'] for i in range(4)]
+        for idx, perm in enumerate(selected, 1):
+            aug_sentences = [sentences[i] for i in perm]
+            aug_row = {f'sentence_{i}': s for i, s in enumerate(aug_sentences)}
+            for i in range(4):
+                aug_row[f'answer_{i}'] = perm[i]
+            # 증강 ID: 원본ID_1, _2, ...
+            aug_row['ID'] = f"{row['ID']}_{idx}"
+            augmented_rows.append(aug_row)
+    aug_df = pd.DataFrame(augmented_rows)
+    # 증강 데이터와 train_df 합치기 (원본은 ID 그대로, 증강은 _N)
+    train_df_augmented = pd.concat([train_df, aug_df], ignore_index=True)
+    return train_df_augmented
+    
 def load_and_prepare_data():
     """데이터 로드 및 준비"""
     df = pd.read_csv(config.TRAIN_FILE)
-    train_df, val_df = train_test_split(df, test_size=0.25, random_state=42)
-    
+
+    # 순열 tuple 컬럼 추가 (stratify split용, 기존 코드를 사용하세요)
+    def tuple_from_row(row):
+        return tuple(row[f"answer_{j}"] for j in range(4))
+    df["permutation"] = df.apply(tuple_from_row, axis=1)
+
+    train_df, val_df = train_test_split(
+        df,
+        test_size=0.25,
+        random_state=42,
+        stratify=df["permutation"]
+    )
+
+    train_df = train_df.drop(columns=["permutation"])
+    val_df = val_df.drop(columns=["permutation"])
+
+    # 데이터증강 적용
+    train_df = augment_train_df(train_df, max_aug=2)
+
+
+    # 데이터 포맷팅 (기존 코드 유지)
     def format_data(df):
         formatted = []
-        for idx, row in tqdm(df.iterrows(), total=len(df)):
+        for _, row in tqdm(df.iterrows(), total=len(df)):
             text = config.PROMPT_TEMPLATE.format(
                 sentence_0=row['sentence_0'],
                 sentence_1=row['sentence_1'],
                 sentence_2=row['sentence_2'],
                 sentence_3=row['sentence_3'],
             ) + f" {row['answer_0']},{row['answer_1']},{row['answer_2']},{row['answer_3']}<|im_end|>"
-            formatted.append({"text": text, "original_id": row.get("ID", idx)})
+            formatted.append({"text": text})
         return formatted
 
     train_data = format_data(train_df)
     val_data = format_data(val_df)
-    return train_data, val_data
+
+    train_dataset = Dataset.from_list(train_data)
+    val_dataset = Dataset.from_list(val_data)
+
+    print(f"훈련: {len(train_dataset)}, 검증: {len(val_dataset)}")
+    return train_dataset, val_dataset
+
 
 def setup_model():
+    """모델 및 토크나이저 설정"""
+    # 토크나이저
     tokenizer = AutoTokenizer.from_pretrained(config.MODEL_NAME, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
+    
+    # 양자화 설정
+    # bnb_config = BitsAndBytesConfig(
+    #     load_in_4bit=True,
+    #     bnb_4bit_quant_type="nf4",
+    #     bnb_4bit_compute_dtype=torch.float16,
+    #     bnb_4bit_use_double_quant=True
+    # )
+    
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_use_double_quant=False,
         bnb_4bit_quant_type="nf4",
         bnb_4bit_compute_dtype=torch.bfloat16,
     )
+    
+    
+    
+    # 모델 로드
     model = AutoModelForCausalLM.from_pretrained(
         config.MODEL_NAME,
         quantization_config=bnb_config,
@@ -63,7 +131,10 @@ def setup_model():
         trust_remote_code=True,
         torch_dtype=torch.float16
     )
+    
+    # LoRA 설정
     model = prepare_model_for_kbit_training(model)
+    
     lora_config = LoraConfig(
         r=config.LORA_R,
         lora_alpha=config.LORA_ALPHA,
@@ -72,28 +143,31 @@ def setup_model():
         bias="none",
         task_type="CAUSAL_LM"
     )
+    
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
+    
     return model, tokenizer
 
-def train_model_phase(model, tokenizer, train_list, val_list, steps, phase_name="Phase"):
-    print(f"\n--- {phase_name} 학습({steps} steps) ---")
-    train_dataset = Dataset.from_list(train_list)
-    val_dataset = Dataset.from_list(val_list) if val_list else None
-
+def train_model(train_dataset, val_dataset, model, tokenizer):
+    """모델 훈련"""
+    # 데이터 콜레이터
     response_template = "<|im_start|>assistant"
     collator = DataCollatorForCompletionOnlyLM(response_template, tokenizer=tokenizer)
+    
+    # 훈련 인자
     training_args = TrainingArguments(
-        output_dir=os.path.join(config.OUTPUT_DIR, phase_name),
+        output_dir=config.OUTPUT_DIR,
         per_device_train_batch_size=config.BATCH_SIZE,
         per_device_eval_batch_size=config.BATCH_SIZE,
         gradient_accumulation_steps=config.GRAD_ACCUMULATION,
         learning_rate=config.LEARNING_RATE,
-        max_steps=steps,
-        warmup_steps=max(1, steps // 10),
-        save_steps=max(1, steps // 2),
-        do_eval=bool(val_dataset),
-        eval_steps=max(1, steps // 2),
+        max_steps=config.MAX_STEPS,
+        warmup_steps=config.WARMUP_STEPS,
+        save_steps=config.SAVE_STEPS,
+        # evaluation_strategy="steps",  # 계속 주석 처리 또는 삭제된 상태로 둡니다.
+        do_eval=True,                   # 이 줄을 추가하여 평가 수행을 명시합니다.
+        eval_steps=config.SAVE_STEPS,    # 평가 간격을 지정합니다 (save_steps와 동일하게).
         logging_steps=50,
         fp16=True,
         optim="paged_adamw_8bit",
@@ -101,86 +175,44 @@ def train_model_phase(model, tokenizer, train_list, val_list, steps, phase_name=
         group_by_length=True,
         report_to="none",
         save_total_limit=2,
-        load_best_model_at_end=False,
+        load_best_model_at_end=False,  # 이 옵션을 사용하려면 평가 전략과 저장 전략이 일치해야 합니다.
     )
+    
+    # 트레이너
     trainer = SFTTrainer(
         model=model,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
+        #max_seq_length=config.MAX_SEQ_LENGTH,
+        #tokenizer=tokenizer,
         args=training_args,
         data_collator=collator,
+        #packing=False,
     )
+    
+    # 훈련 시작
+    print("훈련 시작...")
     trainer.train()
-    trainer.save_model(os.path.join(config.OUTPUT_DIR, f"{phase_name}_model"))
-    tokenizer.save_pretrained(os.path.join(config.OUTPUT_DIR, f"{phase_name}_model"))
+    
+    # 모델 저장
+    trainer.save_model()
+    tokenizer.save_pretrained(config.OUTPUT_DIR)
+    print(f"모델 저장 완료: {config.OUTPUT_DIR}")
+    
     return trainer
 
-def get_losses_on_dataset(model, tokenizer, data_list, batch_size=1):
-    device = model.device
-    model.eval()
-    
-    # === [수정] 토크나이즈 진행 ===
-    tokenized_list = []
-    for item in tqdm(data_list, desc="Tokenizing for HNM"):
-        encoding = tokenizer(
-            item["text"],
-            truncation=True,
-            max_length=1024,
-            padding="max_length",
-            return_tensors="pt"
-        )
-        # flatten (배치 차원 제거)
-        d = {k: v.squeeze(0) for k, v in encoding.items()}
-        d["original_id"] = item["original_id"]
-        tokenized_list.append(d)
-    
-    temp_dataset = Dataset.from_list(tokenized_list)
-    
-    def collate_fn(batch):
-        keys = ['input_ids', 'attention_mask']
-        return {k: torch.stack([torch.tensor(item[k]) for item in batch]) for k in keys}
-
-
-    dataloader = DataLoader(temp_dataset, batch_size=batch_size, collate_fn=collate_fn, shuffle=False)
-    all_losses = []
-    with torch.no_grad():
-        for batch in tqdm(dataloader, desc="HNM: Loss 계산 중"):
-            batch = {k: v.to(device) for k, v in batch.items()}
-            outputs = model(**batch, labels=batch["input_ids"])
-            batch_loss = outputs.loss.item()
-            for _ in range(batch["input_ids"].shape[0]):
-                all_losses.append(batch_loss)
-    return all_losses
-
-
 def main():
+    """메인 함수"""
     print("데이터 준비...")
-    train_data, val_data = load_and_prepare_data()
+    train_dataset, val_dataset = load_and_prepare_data()
+    
     print("모델 설정...")
     model, tokenizer = setup_model()
-    print("HNM 단계적 파인튜닝 시작!")
-
-    # --- 초기 파인튜닝 ---
-    if getattr(config, "DO_HNM", True):
-        initial_steps = int(config.MAX_STEPS * getattr(config, "HNM_INITIAL_TRAIN_RATIO", 0.5))
-        trainer = train_model_phase(model, tokenizer, train_data, val_data, initial_steps, "initial")
-
-        # --- Hard-negative mining ---
-        print("\nHard Negative Mining...")
-        losses = get_losses_on_dataset(trainer.model, tokenizer, train_data, batch_size=getattr(config, "HNM_BATCH_SIZE_FOR_LOSS_CALC", 2))
-        # 상위 N% hard sample 추출
-        n_hard = int(len(losses) * getattr(config, "HNM_HARD_SAMPLE_RATIO", 0.3))
-        hard_indices = np.argsort(losses)[-n_hard:]  # loss 높은 샘플
-        hard_train_data = [train_data[i] for i in hard_indices]
-
-        print(f"Hard sample {len(hard_train_data)}개로 2차 집중 파인튜닝")
-        finetune_steps = config.MAX_STEPS - initial_steps
-        train_model_phase(trainer.model, tokenizer, hard_train_data, [], finetune_steps, "focused_hnm")
-
-        print("HNM 파인튜닝 완료!")
-    else:
-        # HNM 미사용시 전체 데이터로 일반 파인튜닝
-        train_model_phase(model, tokenizer, train_data, val_data, config.MAX_STEPS, "full")
+    
+    print("훈련 시작...")
+    trainer = train_model(train_dataset, val_dataset, model, tokenizer)
+    
+    print("훈련 완료!")
 
 if __name__ == "__main__":
     main()
