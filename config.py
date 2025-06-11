@@ -34,7 +34,8 @@ WARMUP_STEPS = 200
 SAVE_STEPS = 10000        # 더 자주 저장
 
 # 추론 설정 등 기타 동일
-TRAIN_FILE = "train.csv"   
+#TRAIN_FILE = "train.csv"   
+TRAIN_FILE = "train_augmented.csv"  
 TEST_FILE = "test.csv"
 OUTPUT_DIR = "qwen3_model"
 PREDICTIONS_FILE = "predictions.csv"
