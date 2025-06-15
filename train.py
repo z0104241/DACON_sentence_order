@@ -26,58 +26,31 @@ def set_seed(seed):
     torch.backends.cudnn.benchmark = False
 
 set_seed(42)
-
-def hamming_distance(a, b):
-    return sum(x != y for x, y in zip(a, b))
-
-def augment_train_df(train_df, max_aug=2):
-    """train_df에서 각 row별로 hard negative 증강(해밍거리 1~2), ID 변경"""
-    augmented_rows = []
-    for _, row in tqdm(train_df.iterrows(), total=len(train_df)):
-        orig_perm = tuple(row[f'answer_{i}'] for i in range(4))
-        all_perms = list(itertools.permutations(range(4)))
-        hard_perms = [p for p in all_perms if 1 <= hamming_distance(orig_perm, p) <= 2]
-        if not hard_perms:
-            continue
-        selected = random.sample(hard_perms, min(max_aug, len(hard_perms)))
-        sentences = [row[f'sentence_{i}'] for i in range(4)]
-        for idx, perm in enumerate(selected, 1):
-            aug_sentences = [sentences[i] for i in perm]
-            aug_row = {f'sentence_{i}': s for i, s in enumerate(aug_sentences)}
-            for i in range(4):
-                aug_row[f'answer_{i}'] = perm[i]
-            # 증강 ID: 원본ID_1, _2, ...
-            aug_row['ID'] = f"{row['ID']}_{idx}"
-            augmented_rows.append(aug_row)
-    aug_df = pd.DataFrame(augmented_rows)
-    # 증강 데이터와 train_df 합치기 (원본은 ID 그대로, 증강은 _N)
-    train_df_augmented = pd.concat([train_df, aug_df], ignore_index=True)
-    return train_df_augmented
-    
 def load_and_prepare_data():
     """데이터 로드 및 준비"""
+    # 원본 및 증강 데이터 읽기
     df = pd.read_csv(config.TRAIN_FILE)
+    aug_df = pd.read_csv(config.TRAIN_AUG_FILE)
 
-    # 순열 tuple 컬럼 추가 (stratify split용, 기존 코드를 사용하세요)
+    # 순열 tuple 컬럼 추가 (stratify split용)
     def tuple_from_row(row):
         return tuple(row[f"answer_{j}"] for j in range(4))
     df["permutation"] = df.apply(tuple_from_row, axis=1)
 
+    # 원본 데이터 기준으로 split
     train_df, val_df = train_test_split(
         df,
         test_size=0.25,
         random_state=42,
         stratify=df["permutation"]
     )
-
     train_df = train_df.drop(columns=["permutation"])
     val_df = val_df.drop(columns=["permutation"])
 
-    # 데이터증강 적용
-    train_df = augment_train_df(train_df, max_aug=2)
+    # train set에만 증강 데이터 추가
+    full_train_df = pd.concat([train_df, aug_df], ignore_index=True)
 
-
-    # 데이터 포맷팅 (기존 코드 유지)
+    # 데이터 포맷팅
     def format_data(df):
         formatted = []
         for _, row in tqdm(df.iterrows(), total=len(df)):
@@ -90,7 +63,7 @@ def load_and_prepare_data():
             formatted.append({"text": text})
         return formatted
 
-    train_data = format_data(train_df)
+    train_data = format_data(full_train_df)
     val_data = format_data(val_df)
 
     train_dataset = Dataset.from_list(train_data)
@@ -105,23 +78,12 @@ def setup_model():
     # 토크나이저
     tokenizer = AutoTokenizer.from_pretrained(config.MODEL_NAME, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
-    
-    # 양자화 설정
-    # bnb_config = BitsAndBytesConfig(
-    #     load_in_4bit=True,
-    #     bnb_4bit_quant_type="nf4",
-    #     bnb_4bit_compute_dtype=torch.float16,
-    #     bnb_4bit_use_double_quant=True
-    # )
-    
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_use_double_quant=False,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_compute_dtype=torch.float16
     )
-    
-    
     
     # 모델 로드
     model = AutoModelForCausalLM.from_pretrained(
@@ -170,8 +132,9 @@ def train_model(train_dataset, val_dataset, model, tokenizer):
         eval_steps=config.SAVE_STEPS,    # 평가 간격을 지정합니다 (save_steps와 동일하게).
         logging_steps=50,
         fp16=True,
+        bf16=False,
         optim="paged_adamw_8bit",
-        gradient_checkpointing=True,
+        gradient_checkpointing=False,
         group_by_length=True,
         report_to="none",
         save_total_limit=2,
