@@ -1,20 +1,19 @@
 """통합 훈련 모듈 - 데이터 전처리 + 모델 + 훈련"""
-import os
-import random
-import itertools
+import os, shutil, random, gc, itertools, torch
 import numpy as np
 import pandas as pd
-import torch
 from datasets import Dataset
-from transformers import (
-    AutoTokenizer, AutoModelForCausalLM, TrainingArguments,
-    BitsAndBytesConfig
-)
+from transformers import (AutoTokenizer, AutoModelForCausalLM, TrainingArguments, BitsAndBytesConfig)
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from trl import SFTTrainer, DataCollatorForCompletionOnlyLM
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 import config
+
+
+# shutil.rmtree(os.path.expanduser("~/.cache/huggingface"), ignore_errors=True)
+# shutil.rmtree(os.path.expanduser("~/.cache/torch/transformers"), ignore_errors=True)
+# shutil.rmtree("/tmp", ignore_errors=True)
 
 def set_seed(seed):
     random.seed(seed)

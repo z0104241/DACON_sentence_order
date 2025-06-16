@@ -2,7 +2,7 @@ import pandas as pd
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline, set_seed
 from tqdm import tqdm
 import torch
-import random
+import random, shutil, os
 import numpy as np
 import itertools
 
@@ -32,7 +32,7 @@ generator = pipeline(
     repetition_penalty=1.15
 )
 
-BATCH_SIZE = 3  # VRAM에 따라 조정
+BATCH_SIZE = 8  # VRAM에 따라 조정
 
 def make_prompt(sentence):
     return (
@@ -80,13 +80,16 @@ def cleanup():
         if d and os.path.exists(d):
             print(f"캐시 폴더 삭제: {d}")
             shutil.rmtree(d, ignore_errors=True)
+    shutil.rmtree(os.path.expanduser("~/.cache/huggingface"), ignore_errors=True)
+    shutil.rmtree(os.path.expanduser("~/.cache/torch/transformers"), ignore_errors=True)
+    shutil.rmtree("/tmp", ignore_errors=True)
 
     print("메모리, 캐시 정리 완료")
 
 
 def main():
     # === train.csv 읽기 ===
-    df = pd.read_csv('train.csv').head(2)
+    df = pd.read_csv('train.csv')#.head(2)
 
     # sentence 컬럼명 추출
     cols = [c for c in df.columns if c.startswith("sentence_")]
@@ -160,4 +163,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    #cleanup()
+    cleanup()
