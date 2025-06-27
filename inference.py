@@ -24,7 +24,7 @@ from config import (
     MAX_NEW_TOKENS,
     INFERENCE_BATCH_SIZE,
     PROMPT_TEMPLATE,
-    OUTPUT_DIR  
+    OUTPUT_DIR , FEWSHOT_EXAMPLE  
 )
 
 def load_model_and_tokenizer() -> Tuple[PeftModel, AutoTokenizer]:
@@ -57,8 +57,7 @@ def load_model_and_tokenizer() -> Tuple[PeftModel, AutoTokenizer]:
     return model, tokenizer
 
 def create_gemma_prompt(sentences):
-    """Gemma marker 프롬프트 생성"""
-    return PROMPT_TEMPLATE.format(
+    return FEWSHOT_EXAMPLE + PROMPT_TEMPLATE.format(
         sentence_0=sentences[0],
         sentence_1=sentences[1],
         sentence_2=sentences[2],
@@ -223,12 +222,12 @@ def main(input_file: str, output_file: str) -> pd.DataFrame:
     print(f"   - 에러: {error_count}")
     print(f"⏱️  처리 시간: {elapsed_time:.1f}초")
     print(f"🚀 처리 속도: {samples_per_sec:.1f} 샘플/초")
-    return results_df.iloc[:,:5]
+    return results_df#.iloc[:,:5]
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Gemma-3-12B-it marker 기반 추론')
     parser.add_argument('--input', '-i', default='test.csv', help='입력 CSV 파일')
-    parser.add_argument('--output', '-o', default='predictions_gemma.csv', help='출력 CSV 파일')
+    parser.add_argument('--output', '-o', default='predictions_gemm_0626.csv', help='출력 CSV 파일')
     args = parser.parse_args()
     try:
         main(args.input, args.output)
