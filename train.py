@@ -26,7 +26,7 @@ def set_seed(seed):
 
 set_seed(42)
 def load_and_prepare_data():
-    """데이터 로드 및 준비"""
+    """데이터 로드 및 준비 (원본-증강 세트 단위 split)"""
     # 원본 및 증강 데이터 읽기
     df = pd.read_csv(config.TRAIN_FILE)
     aug_df = pd.read_csv(config.TRAIN_AUG_FILE)
@@ -46,8 +46,21 @@ def load_and_prepare_data():
     train_df = train_df.drop(columns=["permutation"])
     val_df = val_df.drop(columns=["permutation"])
 
-    # train set에만 증강 데이터 추가
-    full_train_df = pd.concat([train_df, aug_df], ignore_index=True)
+    # 증강 데이터에서 base_ID 추출 (예: TRAIN_0000_aug_1 → TRAIN_0000)
+    def extract_base_id(x):
+        return x.split("_aug")[0] if "_aug" in x else x
+
+    aug_df["base_ID"] = aug_df["ID"].apply(extract_base_id)
+
+    # split과 동일하게 증강 데이터도 분할
+    train_ids = set(train_df["ID"])
+    val_ids = set(val_df["ID"])
+    train_aug_df = aug_df[aug_df["base_ID"].isin(train_ids)]
+    val_aug_df = aug_df[aug_df["base_ID"].isin(val_ids)]
+
+    # 최종 합치기
+    full_train_df = pd.concat([train_df, train_aug_df], ignore_index=True)
+    full_val_df   = pd.concat([val_df, val_aug_df],   ignore_index=True)
 
     # 데이터 포맷팅
     def format_data(df):
@@ -63,14 +76,13 @@ def load_and_prepare_data():
         return formatted
 
     train_data = format_data(full_train_df)
-    val_data = format_data(val_df)
+    val_data = format_data(full_val_df)
 
     train_dataset = Dataset.from_list(train_data)
     val_dataset = Dataset.from_list(val_data)
 
     print(f"훈련: {len(train_dataset)}, 검증: {len(val_dataset)}")
     return train_dataset, val_dataset
-
 
 def setup_model():
     """모델 및 토크나이저 설정"""
@@ -113,8 +125,9 @@ def setup_model():
 def train_model(train_dataset, val_dataset, model, tokenizer):
     """모델 훈련"""
     # 데이터 콜레이터
-    response_template = "<|im_start|>assistant"
+    response_template = "<start_of_turn>model"
     collator = DataCollatorForCompletionOnlyLM(response_template, tokenizer=tokenizer)
+
     
     # 훈련 인자
     training_args = TrainingArguments(

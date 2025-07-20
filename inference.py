@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
-순수 AI 추론 스크립트 (후처리 제외)
-Few-shot 프롬프트 + 배치 처리 + 메모리 관리
+Gemma-3-12B-it 특화 추론 스크립트 (marker prompt + 4bit)
 """
-
 import pandas as pd
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
@@ -26,62 +24,11 @@ from config import (
     MAX_NEW_TOKENS,
     INFERENCE_BATCH_SIZE,
     PROMPT_TEMPLATE,
-    OUTPUT_DIR  
+    OUTPUT_DIR , FEWSHOT_EXAMPLE  
 )
 
-
-### 허깅페이스 업로드용
-# def load_model_and_tokenizer() -> Tuple[PeftModel, AutoTokenizer]: 
-#     """모델과 토크나이저 로드"""
-#     print("🔧 모델 로드 중...")
-    
-#     # 토크나이저
-#     tokenizer = AutoTokenizer.from_pretrained(
-#         MODEL_NAME,  
-#         trust_remote_code=True,
-#         cache_dir=CACHE_DIR  
-#     )
-#     tokenizer.pad_token = tokenizer.eos_token
-#     tokenizer.padding_side = "left"
-    
-#     # 양자화 설정
-#     compute_dtype = getattr(torch, BNB_4BIT_COMPUTE_DTYPE)
-    
-#     bnb_config = BitsAndBytesConfig(
-#         load_in_4bit=USE_4BIT,
-#         bnb_4bit_use_double_quant=BNB_4BIT_USE_DOUBLE_QUANT,
-#         bnb_4bit_quant_type=BNB_4BIT_QUANT_TYPE,
-#         bnb_4bit_compute_dtype=compute_dtype,
-#     )
-    
-#     # 베이스 모델
-#     base_model = AutoModelForCausalLM.from_pretrained(
-#         MODEL_NAME,
-#         quantization_config=bnb_config,
-#         device_map="auto",
-#         trust_remote_code=True,
-#         torch_dtype=torch.float16,
-#         cache_dir=CACHE_DIR
-#     )
-    
-#     # LoRA 어댑터 로드
-#     model = PeftModel.from_pretrained(
-#         base_model, 
-#         HUGGINGFACE_REPO,
-#         subfolder=ADAPTER_SUBFOLDER,
-#         cache_dir=CACHE_DIR
-#     )
-#     model.eval()
-    
-#     print("✅ 모델 로드 완료!")
-#     return model, tokenizer
-
-
-
 def load_model_and_tokenizer() -> Tuple[PeftModel, AutoTokenizer]:
-    """모델과 토크나이저 로드 (로컬 어댑터 경로 사용)"""
     print("🔧 모델 로드 중...")
-
     tokenizer = AutoTokenizer.from_pretrained(
         MODEL_NAME,  
         trust_remote_code=True,
@@ -89,7 +36,6 @@ def load_model_and_tokenizer() -> Tuple[PeftModel, AutoTokenizer]:
     )
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
-
     compute_dtype = getattr(torch, BNB_4BIT_COMPUTE_DTYPE)
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=USE_4BIT,
@@ -102,24 +48,16 @@ def load_model_and_tokenizer() -> Tuple[PeftModel, AutoTokenizer]:
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         cache_dir=CACHE_DIR
     )
-
-    # === 로컬 어댑터 로드 ===
-    
-    model = PeftModel.from_pretrained(
-        base_model, 
-        OUTPUT_DIR    
-    )
+    model = PeftModel.from_pretrained(base_model, OUTPUT_DIR)
     model.eval()
-
     print("✅ 모델 로드 완료!")
     return model, tokenizer
 
-def create_fewshot_prompt(sentences):
-    """config.py의 템플릿으로 프롬프트 생성"""
-    return PROMPT_TEMPLATE.format(
+def create_gemma_prompt(sentences):
+    return FEWSHOT_EXAMPLE + PROMPT_TEMPLATE.format(
         sentence_0=sentences[0],
         sentence_1=sentences[1],
         sentence_2=sentences[2],
@@ -127,15 +65,9 @@ def create_fewshot_prompt(sentences):
     )
 
 def predict_batch_return_raw(sentences_batch: List[List[str]], model: PeftModel, tokenizer: AutoTokenizer) -> Tuple[List[str], List[str]]:
-    """
-    배치 예측 결과와 LLM 원본 답변(raw text) 반환.
-    """
-    prompts = [create_fewshot_prompt(sentences) for sentences in sentences_batch]
-    messages_batch = [[{"role": "user", "content": prompt}] for prompt in prompts]
-    texts = [tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True) 
-             for messages in messages_batch]
+    prompts = [create_gemma_prompt(sentences) for sentences in sentences_batch]
     inputs = tokenizer(
-        texts, 
+        prompts, 
         return_tensors="pt", 
         padding=True, 
         truncation=True, 
@@ -161,84 +93,50 @@ def predict_batch_return_raw(sentences_batch: List[List[str]], model: PeftModel,
         raw_outputs.append(generated)
     return results, raw_outputs
 
-
 def extract_order_enhanced(text: str) -> str:
-    """강화된 파싱 함수"""
-    
-    # 1순위: 정확한 패턴들
-    exact_patterns = [
-        r'답[:：]\s*([0-3]),\s*([0-3]),\s*([0-3]),\s*([0-3])',
-        r'답[:：]\s*([0-3])\s*,\s*([0-3])\s*,\s*([0-3])\s*,\s*([0-3])',
-        r'순서[:：]\s*([0-3]),\s*([0-3]),\s*([0-3]),\s*([0-3])',
+    """Gemma marker 기반 파싱 강화"""
+    # 모델 출력에서 <end_of_turn> 앞/뒤 클린업
+    text = text.split("<end_of_turn>")[0].strip()
+    # marker 다음 숫자 시퀀스 추출
+    patterns = [
+        r'<start_of_turn>model\s*([0-3][,0-3 ]{5,})',
         r'([0-3]),\s*([0-3]),\s*([0-3]),\s*([0-3])',
-        r'([0-3])\s*→\s*([0-3])\s*→\s*([0-3])\s*→\s*([0-3])',
         r'([0-3])\s+([0-3])\s+([0-3])\s+([0-3])',
         r'([0-3])-([0-3])-([0-3])-([0-3])',
         r'([0-3])\.([0-3])\.([0-3])\.([0-3])',
     ]
-    
-    for pattern in exact_patterns:
+    for pattern in patterns:
         match = re.search(pattern, text)
         if match:
-            if len(match.groups()) == 4:
-                result = [int(g) for g in match.groups()]
-            else:
-                result = [int(d) for d in match.group(1) if d.isdigit()]
-                
-            if len(result) == 4 and set(result) == {0,1,2,3}:
-                return ''.join(map(str, result))
-    
-    # 2순위: 4자리 연속 숫자
+            numbers = re.findall(r'[0-3]', match.group(0))
+            if len(numbers) == 4 and set(numbers) == {0,1,2,3}:
+                return ''.join(numbers)
+    # 4자리 연속 숫자
     four_digit = re.search(r'\b([0-3]{4})\b', text)
     if four_digit:
         return four_digit.group(1)
-    
-    # 3순위: 순서/답 키워드 뒤 숫자들
-    patterns = [r'순서[:：]\s*([0-3\s,]+)', r'답[:：]\s*([0-3\s,]+)', r'결과[:：]\s*([0-3\s,]+)']
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            numbers = re.findall(r'[0-3]', match.group(1))
-            if len(numbers) >= 4:
-                return ''.join(numbers[:4])
-    
-    # 4순위: 마지막 줄에서 숫자들
-    lines = [line.strip() for line in text.split('\n') if line.strip()]
-    if lines:
-        numbers = re.findall(r'[0-3]', lines[-1])
-        if len(numbers) >= 4:
-            return ''.join(numbers[:4])
-    
-    # 5순위: 전체에서 숫자들
+    # 전체에서 숫자 4개 추출
     all_numbers = re.findall(r'[0-3]', text)
     if len(all_numbers) >= 4:
-        return ''.join(all_numbers[-4:])
-    
-    # 파싱 실패시 원본 텍스트 반환
+        return ''.join(all_numbers[:4])
     return text
 
 def extract_sentences(row: pd.Series) -> List[str]:
-    """행에서 문장들 추출"""
     patterns = [
         ['sentence_0', 'sentence_1', 'sentence_2', 'sentence_3'],
         ['sent_0', 'sent_1', 'sent_2', 'sent_3'],
         ['text_0', 'text_1', 'text_2', 'text_3'],
         ['0', '1', '2', '3']
     ]
-    
     for pattern in patterns:
         try:
             return [str(row[col]) for col in pattern]
         except KeyError:
             continue
-    
-    # 처음 4개 컬럼 사용
     return [str(row.iloc[i]) for i in range(min(4, len(row)))]
 
 def process_result(predicted_order: str) -> Dict[str, Union[int, str]]:
-    """예측 결과를 처리 (후처리 없음)"""
     if len(predicted_order) == 4 and predicted_order.isdigit():
-        # 파싱 성공
         return {
             'answer_0': int(predicted_order[0]),
             'answer_1': int(predicted_order[1]),
@@ -248,7 +146,6 @@ def process_result(predicted_order: str) -> Dict[str, Union[int, str]]:
             'parsing_status': 'SUCCESS'
         }
     else:
-        # 파싱 실패
         return {
             'answer_0': '',
             'answer_1': '',
@@ -260,29 +157,19 @@ def process_result(predicted_order: str) -> Dict[str, Union[int, str]]:
 def main(input_file: str, output_file: str) -> pd.DataFrame:
     import time
     start_time = time.time()
-
-    # 모델/토크나이저 로드
     model, tokenizer = load_model_and_tokenizer()
-
-    # 데이터 로드
     df = pd.read_csv(input_file)
     print(f"📂 데이터 로드: {len(df)}개 행")
-
-    # 배치별 예측
     results = []
     total_batches = (len(df) + INFERENCE_BATCH_SIZE - 1) // INFERENCE_BATCH_SIZE
-
     print(f"🚀 배치 크기: {INFERENCE_BATCH_SIZE}, 총 배치: {total_batches}")
-
     for batch_idx in tqdm(range(total_batches), desc="배치 처리"):
         start_idx = batch_idx * INFERENCE_BATCH_SIZE
         end_idx = min(start_idx + INFERENCE_BATCH_SIZE, len(df))
         batch_rows = df.iloc[start_idx:end_idx]
-
         try:
             sentences_batch = [extract_sentences(row) for _, row in batch_rows.iterrows()]
             predicted_orders, raw_outputs = predict_batch_return_raw(sentences_batch, model, tokenizer)
-
             for i, (row_idx, _) in enumerate(batch_rows.iterrows()):
                 result = process_result(predicted_orders[i])
                 results.append({
@@ -291,7 +178,7 @@ def main(input_file: str, output_file: str) -> pd.DataFrame:
                     'answer_1': result['answer_1'],
                     'answer_2': result['answer_2'],
                     'answer_3': result['answer_3'],
-                    'context': raw_outputs[i],  # LLM 원본 답변
+                    'context': raw_outputs[i],
                     'raw_output': result['raw_output'],
                     'parsing_status': result['parsing_status'],
                     'sentence_0': sentences_batch[i][0],
@@ -317,45 +204,16 @@ def main(input_file: str, output_file: str) -> pd.DataFrame:
                     'sentence_2': '',
                     'sentence_3': ''
                 })
-
     results_df = pd.DataFrame(results)
-
-    # (1) 결측치/파싱실패 행 재추론
-    mask = results_df[['answer_0','answer_1','answer_2','answer_3']].isnull().any(axis=1) | (results_df['parsing_status'] != 'SUCCESS')
-    failed_rows = results_df[mask]
-    if len(failed_rows) > 0:
-        print(f"⚠️ 결측/파싱실패 행 {len(failed_rows)}건, 재추론 시도")
-        # 원본 문장들로 재추론
-        sentences_batch = [
-            [row['sentence_0'], row['sentence_1'], row['sentence_2'], row['sentence_3']]
-            for _, row in failed_rows.iterrows()
-        ]
-        predicted_orders, raw_outputs = predict_batch_return_raw(sentences_batch, model, tokenizer)
-        for idx, (row_idx, _) in enumerate(failed_rows.iterrows()):
-            result = process_result(predicted_orders[idx])
-            # 기존 결과 덮어쓰기
-            results_df.loc[failed_rows.index[idx], 'answer_0'] = result['answer_0']
-            results_df.loc[failed_rows.index[idx], 'answer_1'] = result['answer_1']
-            results_df.loc[failed_rows.index[idx], 'answer_2'] = result['answer_2']
-            results_df.loc[failed_rows.index[idx], 'answer_3'] = result['answer_3']
-            results_df.loc[failed_rows.index[idx], 'context'] = raw_outputs[idx]
-            results_df.loc[failed_rows.index[idx], 'raw_output'] = result['raw_output']
-            results_df.loc[failed_rows.index[idx], 'parsing_status'] = result['parsing_status']
-
-    # 결과 저장
-    # (필요 컬럼만 저장: answer_0~3, context 등)
+    # 결측/파싱실패 재추론 생략 (동일 로직 가능)
     results_df.to_csv(output_file, index=False, encoding='utf-8-sig')
-
-    # 성공률 등 통계
     success_count = (results_df['parsing_status'] == 'SUCCESS').sum()
     failed_count = (results_df['parsing_status'] == 'FAILED').sum()
     error_count = (results_df['parsing_status'] == 'ERROR').sum()
     total_count = len(results_df)
     success_rate = (success_count / total_count) * 100 if total_count > 0 else 0
-
     elapsed_time = time.time() - start_time
     samples_per_sec = len(df) / elapsed_time
-
     print(f"💾 순수 AI 추론 결과 저장: {output_file}")
     print(f"📊 파싱 성공률: {success_rate:.1f}% ({success_count}/{total_count})")
     print(f"   - 성공: {success_count}")
@@ -363,17 +221,14 @@ def main(input_file: str, output_file: str) -> pd.DataFrame:
     print(f"   - 에러: {error_count}")
     print(f"⏱️  처리 시간: {elapsed_time:.1f}초")
     print(f"🚀 처리 속도: {samples_per_sec:.1f} 샘플/초")
-
-    return results_df
+    return results_df#.iloc[:,:5]
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='순수 AI 추론 (후처리 제외)')
+    parser = argparse.ArgumentParser(description='Gemma-3-12B-it marker 기반 추론')
     parser.add_argument('--input', '-i', default='test.csv', help='입력 CSV 파일')
-    parser.add_argument('--output', '-o', default='predictions.csv', help='출력 CSV 파일')
-    
+    parser.add_argument('--output', '-o', default='predictions_gemm_0626.csv', help='출력 CSV 파일')
     args = parser.parse_args()
-    
     try:
         main(args.input, args.output)
     except KeyboardInterrupt:
