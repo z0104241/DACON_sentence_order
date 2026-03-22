@@ -1,5 +1,5 @@
 """통합 훈련 모듈 - 데이터 전처리 + 모델 + 훈련"""
-import os, shutil, random, gc, itertools, torch
+import os, random, torch
 import numpy as np
 import pandas as pd
 from datasets import Dataset
@@ -10,10 +10,6 @@ from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 import config
 
-
-# shutil.rmtree(os.path.expanduser("~/.cache/huggingface"), ignore_errors=True)
-# shutil.rmtree(os.path.expanduser("~/.cache/torch/transformers"), ignore_errors=True)
-# shutil.rmtree("/tmp", ignore_errors=True)
 
 def set_seed(seed):
     random.seed(seed)
@@ -71,7 +67,7 @@ def load_and_prepare_data():
                 sentence_1=row['sentence_1'],
                 sentence_2=row['sentence_2'],
                 sentence_3=row['sentence_3'],
-            ) + f" {row['answer_0']},{row['answer_1']},{row['answer_2']},{row['answer_3']}<|im_end|>"
+            ) + f"\n{row['answer_0']},{row['answer_1']},{row['answer_2']},{row['answer_3']}<end_of_turn>"
             formatted.append({"text": text})
         return formatted
 
@@ -89,20 +85,21 @@ def setup_model():
     # 토크나이저
     tokenizer = AutoTokenizer.from_pretrained(config.MODEL_NAME, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
+    compute_dtype = getattr(torch, config.BNB_4BIT_COMPUTE_DTYPE)
     bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=False,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16
+        load_in_4bit=config.USE_4BIT,
+        bnb_4bit_use_double_quant=config.BNB_4BIT_USE_DOUBLE_QUANT,
+        bnb_4bit_quant_type=config.BNB_4BIT_QUANT_TYPE,
+        bnb_4bit_compute_dtype=compute_dtype
     )
-    
+
     # 모델 로드
     model = AutoModelForCausalLM.from_pretrained(
         config.MODEL_NAME,
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
-        torch_dtype=torch.float16
+        torch_dtype=compute_dtype
     )
     
     # LoRA 설정
@@ -143,8 +140,8 @@ def train_model(train_dataset, val_dataset, model, tokenizer):
         do_eval=True,                   # 이 줄을 추가하여 평가 수행을 명시합니다.
         eval_steps=config.SAVE_STEPS,    # 평가 간격을 지정합니다 (save_steps와 동일하게).
         logging_steps=50,
-        fp16=True,
-        bf16=False,
+        fp16=False,
+        bf16=True,  # bfloat16 (config.BNB_4BIT_COMPUTE_DTYPE와 일치)
         optim="paged_adamw_8bit",
         gradient_checkpointing=False,
         group_by_length=True,

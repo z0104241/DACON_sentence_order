@@ -170,10 +170,10 @@ def main(input_file: str, output_file: str) -> pd.DataFrame:
         try:
             sentences_batch = [extract_sentences(row) for _, row in batch_rows.iterrows()]
             predicted_orders, raw_outputs = predict_batch_return_raw(sentences_batch, model, tokenizer)
-            for i, (row_idx, _) in enumerate(batch_rows.iterrows()):
+            for i, (row_idx, row) in enumerate(batch_rows.iterrows()):
                 result = process_result(predicted_orders[i])
                 results.append({
-                    'ID': f'TEST_{row_idx:04d}',
+                    'ID': row['ID'] if 'ID' in df.columns else f'TEST_{row_idx:04d}',
                     'answer_0': result['answer_0'],
                     'answer_1': result['answer_1'],
                     'answer_2': result['answer_2'],
@@ -189,9 +189,9 @@ def main(input_file: str, output_file: str) -> pd.DataFrame:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         except Exception as e:
-            for i, (row_idx, _) in enumerate(batch_rows.iterrows()):
+            for i, (row_idx, row) in enumerate(batch_rows.iterrows()):
                 results.append({
-                    'ID': f'TEST_{row_idx:04d}',
+                    'ID': row['ID'] if 'ID' in df.columns else f'TEST_{row_idx:04d}',
                     'answer_0': '',
                     'answer_1': '',
                     'answer_2': '',

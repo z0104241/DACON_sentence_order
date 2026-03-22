@@ -46,9 +46,9 @@ def make_doc_prompt(sentences):
         "문장4: " + sentences[3]
     )
     full_prompt = (
-        "<|start_of_turn|>system\n" + system_prompt + "<|end_of_turn|>\n"
-        "<|start_of_turn|>user\n" + user_prompt + "<|end_of_turn|>\n"
-        "<|start_of_turn|>model\n"
+        "<start_of_turn>system\n" + system_prompt + "<end_of_turn>\n"
+        "<start_of_turn>user\n" + user_prompt + "<end_of_turn>\n"
+        "<start_of_turn>model\n"
     )
     return full_prompt
 
